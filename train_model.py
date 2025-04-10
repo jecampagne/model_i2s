@@ -11,6 +11,8 @@ import time
 import torch
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
+import regex as re
+import glob
 
 
 from model import *
@@ -30,9 +32,23 @@ def set_seed(seed):
 ################
 # dataloader
 ################
+
+#bug JEC 9 avril 25
+#def get_list(dir, pattern):
+#    dir = pathlib.Path(dir)
+#    return list(dir.glob(pattern))
+
+file_pattern = re.compile(r'.*?(\d+).*?')
+def get_order(file):
+    match = file_pattern.match(os.path.basename(file))
+    if not match:
+        return math.inf
+    return int(match.groups()[-1])
+
 def get_list(dir, pattern):
-    dir = pathlib.Path(dir)
-    return list(dir.glob(pattern))
+    #dir = pathlib.Path(dir)
+    a = list(glob.glob(dir+'/'+pattern))
+    return sorted(a, key=get_order)
 
 
 class CustumDataset(Dataset):
@@ -48,6 +64,20 @@ class CustumDataset(Dataset):
         assert len(self.imgs) == len(
             self.spectra
         ), f"number of images and spectra error {img_path}, {spec_path}"
+
+        #matching image-spect verification
+        no_pb = True
+        num_pb=0
+        for i in range(len(self.imgs)):
+            idx_img = re.findall(r'\d+', os.path.basename(self.imgs[i]))[0]
+            idx_spec = re.findall(r'\d+', os.path.basename(self.spectra[i]))[0]
+            if  idx_img != idx_spec:
+                print('pb at ',i,idx_img,idx_spec)
+                num_pb += 1
+                if no_pb:
+                    no_pb = False
+        assert no_pb, f"there are {num_pb} non matching betwwen images & spectra"
+        
 
         print(f"CustumDataset: {len(self.imgs)} img/spec loaded")
         self.transform = transform
@@ -94,14 +124,28 @@ def train(args, model, criterion, train_loader, optimizer, epoch):
         optimizer.step()
 
     if args.archi == "Unet-Encoder":
-        tmp1 = model.encoder["0"][0].weight.grad
         tmp2 = model.fc0.linear.weight.grad
         print("epoch",epoch,"ib",i_batch,
-          "min_abs e.0.0 grad",torch.min(torch.abs(tmp1)),
-          "max_abs e.0.0 grad",torch.max(torch.abs(tmp1)),"\n",
-          "min_abs fc0 grad",torch.min(torch.abs(tmp2)),
-          "max_abs fc0 grad",torch.max(torch.abs(tmp2)),
-          )
+              "max_abs e.0.0 grad",torch.max(torch.abs( model.encoder["0"][0].weight.grad)),"\n",
+              "max_abs e.0.2 grad",torch.max(torch.abs( model.encoder["0"][2].weight.grad)),"\n",
+              "max_abs e.1.0 grad",torch.max(torch.abs( model.encoder["1"][0].weight.grad)),"\n",
+              "max_abs e.1.3 grad",torch.max(torch.abs( model.encoder["1"][3].weight.grad)),"\n",
+              "max_abs e.2.0 grad",torch.max(torch.abs( model.encoder["2"][0].weight.grad)),"\n",
+              "max_abs e.2.3 grad",torch.max(torch.abs( model.encoder["2"][3].weight.grad)),"\n",
+              "max_abs e.3.0 grad",torch.max(torch.abs( model.encoder["3"][0].weight.grad)),"\n",
+              "max_abs e.3.3 grad",torch.max(torch.abs( model.encoder["3"][3].weight.grad)),"\n",
+              "max_abs e.4.0 grad",torch.max(torch.abs( model.encoder["4"][0].weight.grad)),"\n",
+              "max_abs e.4.3 grad",torch.max(torch.abs( model.encoder["4"][3].weight.grad)),"\n",
+              "max_abs fc0 grad",torch.max(torch.abs(tmp2)),
+              )
+    elif args.archi == "Resnet18":
+        print("epoch",epoch,"ib",i_batch,
+              "max_abs l1.0.conv1 grad",torch.max(torch.abs(model.layer1[0].conv1.weight.grad)),"\n",
+              "max_abs l4.1.conv2 grad",torch.max(torch.abs(model.layer4[1].conv2.weight.grad)),"\n",
+              "max_abs fc grad",torch.max(torch.abs(model.fc.weight.grad)),
+              )
+        
+        
 
     return loss_sum / (i_batch + 1)
 
@@ -160,6 +204,8 @@ def main():
     except OSError:
         pass
 
+    print("Info: outdir is ",args.out_root_dir)
+    
     # device cpu/gpu...
     args.device = (
         torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -191,7 +237,7 @@ def main():
 
     # get a batch to determin the image/spectrum sizes
     train_img, train_spec = next(iter(train_loader))
-    img_channels = 1
+    #img_channels = args.num_channels
     img_H = train_img.shape[2]
     img_W = train_img.shape[3]
     args.n_bins = train_spec.shape[1]
@@ -202,6 +248,9 @@ def main():
         model = UNet(args)
     elif args.archi == "Inception":
         model = NetWithInception(args)
+    elif args.archi == "Resnet18":
+        model = resnet18(num_input_channels = args.num_channels,
+                         num_classes=args.n_bins)
     else:
         print("Error: ", args.archi, "unknown")
         return
@@ -222,10 +271,33 @@ def main():
     model.to(args.device)
 
     # optimizer & scheduler
+
+
+
+    #JEC 7 april 25
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=args.lr_init,
+        #eps=1e-8, # by default is 1e-8
+        #weight_decay=1e-3   # default is 0
     )
+    #optimizer = torch.optim.AdamW(
+    #    filter(lambda p: p.requires_grad, model.parameters()),
+    #    lr=args.lr_init,
+    #    #eps=1e-8, # by default is 1e-8
+    #    #weight_decay=1e-3   # default is 0
+    #)
+    # particularization of the classifier layer for the learning
+    #my_list = ['fc0.linear.weight', 'fc0.linear.bias']
+    #fc0_params = list(filter(lambda kv: kv[0] in my_list, model.named_parameters()))
+    #base_params = list(filter(lambda kv: kv[0] not in my_list, model.named_parameters()))
+    #optimizer = torch.optim.Adam(
+    #    [
+    #        {'params' : base_params},
+    #        {'params' : fc0_params, 'lr': args.lr_init}
+    #    ],
+    #    lr=args.lr_init/10,
+    #)
     #optimizer = torch.optim.SGD(
     #    filter(lambda p: p.requires_grad, model.parameters()),
     #    lr=args.lr_init,
@@ -233,7 +305,11 @@ def main():
 
     
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=args.lr_decay, patience=args.patience
+        optimizer,
+        mode="min",
+        factor=args.lr_decay,
+        patience=args.patience,
+        min_lr=1e-6
     )
 
     # check for resume session: load model/optim/scheduler dictionnaries
@@ -292,6 +368,9 @@ def main():
     # loop on epochs
     t0 = time.time()
     best_test_loss = np.inf
+
+    print("The current args:",args)
+    
     
     for epoch in range(start_epoch, args.num_epochs + 1):
         # training
@@ -302,7 +381,7 @@ def main():
         # print & book keeping
         print(
             f"Epoch {epoch}, Losses train: {train_loss:.6f}",
-            f"test {test_loss:.6f}, LR= {scheduler.get_last_lr()[0]:.6f}",
+            f"test {test_loss:.6f}, LR= {scheduler.get_last_lr()}",
         )
         train_loss_history.append(train_loss)
         test_loss_history.append(test_loss)
