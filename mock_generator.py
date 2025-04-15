@@ -44,7 +44,7 @@ def make_psf(fwhm, flux=1):
 
 
 class Simul:
-    def __init__(self, seed=42, img_H=128, img_W=1024, tot_1D_width=900, psf_fwhm=20):
+    def __init__(self, seed=42, img_H=128, img_W=1024, tot_1D_width=900):
         # spectrum numer of pixels
         self.tot_1D_width = tot_1D_width
         # Height/Width final image
@@ -52,15 +52,13 @@ class Simul:
         self.img_W = img_W
         # for spectrum 1D (raw)
         self.x_shift_max = 10  # +/- pixels wrt x0
-        self.y_shift_max = 10  # +/- pixels wrt y0
+        self.y_shift_max = img_H//4  # +/- pixels wrt y0 # was 10 6 avril 25
         self.y_0 = int(img_H // 2)  # y positiion of the spectrum start
         self.x_0 = 2 * self.x_shift_max  # x position
 
         assert self.tot_1D_width + self.x_shift_max + self.x_0 < img_W
         self.rng = np.random.default_rng(seed)
 
-        # Psf
-        self.psf = make_psf(fwhm=psf_fwhm)
 
     def get(self, debug=False):
         """
@@ -96,7 +94,10 @@ class Simul:
         img[y_spec_pos, x_spec_start : x_spec_start + self.tot_1D_width] = spectre
 
         # convolution
-        img_conv = signal.oaconvolve(img, self.psf, mode="same")
+        #JEC 15/4/25 make variability in psf: here only fwhm
+        psf_fwhm = 20 + 5 * self.rng.uniform(low=-1,high=1)
+        psf = make_psf(fwhm=psf_fwhm)
+        img_conv = signal.oaconvolve(img, psf, mode="same")
 
         # return
         if debug:
@@ -107,10 +108,11 @@ class Simul:
 
 def main():
     root_dir = "/lustre/fswork/projects/rech/ixh/ufd72rp/spectrum_model_auxtel/"
-    train_img_dir = root_dir + "dataset/train/images/"
-    train_spec_dir = root_dir + "dataset/train/spectra/"
-    test_img_dir = root_dir + "dataset/test/images/"
-    test_spec_dir = root_dir + "dataset/test/spectra/"
+    tag_dataset = "dataset_varpsf"
+    train_img_dir = root_dir + tag_dataset + "/train/images/"
+    train_spec_dir = root_dir + tag_dataset + "/train/spectra/"
+    test_img_dir = root_dir + tag_dataset + "/test/images/"
+    test_spec_dir = root_dir + tag_dataset + "/test/spectra/"
 
     for dname in [train_img_dir, train_spec_dir, test_img_dir, test_spec_dir]:
         try:
@@ -120,7 +122,7 @@ def main():
         except OSError:
             pass
 
-    mysimu = Simul(seed=42)
+    mysimu = Simul(seed=15425)
     Ndata_train = 50_000
     Ndata_test  = 5_000
     data_names = ["train", "test"]
