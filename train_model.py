@@ -17,6 +17,8 @@ import glob
 
 from model import *
 
+# vesion 16 april 25: dataset single file for image+spec
+
 
 ################
 # Utils
@@ -33,21 +35,24 @@ def set_seed(seed):
 # dataloader
 ################
 
-#bug JEC 9 avril 25
-#def get_list(dir, pattern):
+# bug JEC 9 avril 25
+# def get_list(dir, pattern):
 #    dir = pathlib.Path(dir)
 #    return list(dir.glob(pattern))
 
-file_pattern = re.compile(r'.*?(\d+).*?')
+file_pattern = re.compile(r".*?(\d+).*?")
+
+
 def get_order(file):
     match = file_pattern.match(os.path.basename(file))
     if not match:
         return math.inf
     return int(match.groups()[-1])
 
+
 def get_list(dir, pattern):
-    #dir = pathlib.Path(dir)
-    a = list(glob.glob(dir+'/'+pattern))
+    # dir = pathlib.Path(dir)
+    a = list(glob.glob(dir + "/" + pattern))
     return sorted(a, key=get_order)
 
 
@@ -57,49 +62,37 @@ class CustumDataset(Dataset):
     'spec': the original spectrum
     """
 
-    def __init__(self, img_path, spec_path, *, transform=None):
+    def __init__(self, data_path, *, transform=None, ndata=None):
 
-        self.imgs = get_list(img_path, "img*.npy")
-        self.spectra = get_list(spec_path, "spec*.npy")
-        assert len(self.imgs) == len(
-            self.spectra
-        ), f"number of images and spectra error {img_path}, {spec_path}"
-
-        #matching image-spect verification
-        no_pb = True
-        num_pb=0
-        for i in range(len(self.imgs)):
-            idx_img = re.findall(r'\d+', os.path.basename(self.imgs[i]))[0]
-            idx_spec = re.findall(r'\d+', os.path.basename(self.spectra[i]))[0]
-            if  idx_img != idx_spec:
-                print('pb at ',i,idx_img,idx_spec)
-                num_pb += 1
-                if no_pb:
-                    no_pb = False
-        assert no_pb, f"there are {num_pb} non matching betwwen images & spectra"
+        if ndata is None:
+            self.datas = get_list(data_path, "d*.npz")
+        else:
+            self.datas = get_list(data_path, "d*.npz")[:ndata]
         
+        print(f"CustumDataset: {len(self.datas)} data loaded")
 
-        print(f"CustumDataset: {len(self.imgs)} img/spec loaded")
         self.transform = transform
 
     def __len__(self):
-        return len(self.imgs)
+        return len(self.datas)
 
     def __getitem__(self, index):
-        image = np.load(self.imgs[index])      # HxW
+        data = np.load(self.datas[index])
+        image = data["imag"]  # HxW
         image = np.expand_dims(image, axis=0)  # 1xHxW
-        spect = np.load(self.spectra[index])
+        clean = data["imag_clean"]  # HxW
+        clean = np.expand_dims(clean, axis=0)  # 1xHxW
 
         # to torch tensor
         image = torch.from_numpy(image)
-        spect = torch.from_numpy(spect)
+        clean = torch.from_numpy(clean)
 
         # choice to transform as torch array
         # overwise make it as numpy array
         if self.transform is not None:
             image = self.transform(image)
 
-        return image, spect
+        return image, clean
 
 
 ################
@@ -111,41 +104,17 @@ def train(args, model, criterion, train_loader, optimizer, epoch):
     for i_batch, sample_batched in enumerate(train_loader):
         # get the "X,y"
         imgs = sample_batched[0].to(args.device)
-        spectra = sample_batched[1].to(args.device)
+        cleans = sample_batched[1].to(args.device)
 
         # train step
         optimizer.zero_grad()
         output = model(imgs)
-        loss = criterion(output, spectra)
+        loss = criterion(output, cleans)
         loss_sum += loss.item()
         # backprop to compute the gradients
         loss.backward()
         # perform an optimizer step to modify the weights
         optimizer.step()
-
-    if args.archi == "Unet-Encoder":
-        tmp2 = model.fc0.linear.weight.grad
-        print("epoch",epoch,"ib",i_batch,
-              "max_abs e.0.0 grad",torch.max(torch.abs( model.encoder["0"][0].weight.grad)),"\n",
-              "max_abs e.0.2 grad",torch.max(torch.abs( model.encoder["0"][2].weight.grad)),"\n",
-              "max_abs e.1.0 grad",torch.max(torch.abs( model.encoder["1"][0].weight.grad)),"\n",
-              "max_abs e.1.3 grad",torch.max(torch.abs( model.encoder["1"][3].weight.grad)),"\n",
-              "max_abs e.2.0 grad",torch.max(torch.abs( model.encoder["2"][0].weight.grad)),"\n",
-              "max_abs e.2.3 grad",torch.max(torch.abs( model.encoder["2"][3].weight.grad)),"\n",
-              "max_abs e.3.0 grad",torch.max(torch.abs( model.encoder["3"][0].weight.grad)),"\n",
-              "max_abs e.3.3 grad",torch.max(torch.abs( model.encoder["3"][3].weight.grad)),"\n",
-              "max_abs e.4.0 grad",torch.max(torch.abs( model.encoder["4"][0].weight.grad)),"\n",
-              "max_abs e.4.3 grad",torch.max(torch.abs( model.encoder["4"][3].weight.grad)),"\n",
-              "max_abs fc0 grad",torch.max(torch.abs(tmp2)),
-              )
-    elif args.archi == "Resnet18":
-        print("epoch",epoch,"ib",i_batch,
-              "max_abs l1.0.conv1 grad",torch.max(torch.abs(model.layer1[0].conv1.weight.grad)),"\n",
-              "max_abs l4.1.conv2 grad",torch.max(torch.abs(model.layer4[1].conv2.weight.grad)),"\n",
-              "max_abs fc grad",torch.max(torch.abs(model.fc.weight.grad)),
-              )
-        
-        
 
     return loss_sum / (i_batch + 1)
 
@@ -157,10 +126,10 @@ def test(args, model, criterion, test_loader, epoch):
         for i_batch, sample_batched in enumerate(test_loader):
             # get the "X,y"
             imgs = sample_batched[0].to(args.device)
-            spectra = sample_batched[1].to(args.device)
+            cleans = sample_batched[1].to(args.device)
             #
             output = model(imgs)
-            loss = criterion(output, spectra)
+            loss = criterion(output, cleans)
             loss_sum += loss.item()
 
     return loss_sum / (i_batch + 1)
@@ -189,10 +158,8 @@ def main():
         args.num_workers = NUM_CORES // 2
 
     # where to find the dataset (train & test) (input images & output spectra)
-    args.train_img_dir = args.data_root_path + args.train_img_dir
-    args.train_spec_dir = args.data_root_path + args.train_spec_dir
-    args.test_img_dir = args.data_root_path + args.test_img_dir
-    args.test_spec_dir = args.data_root_path + args.test_spec_dir
+    args.train_dir = args.data_root_path + args.train_dir
+    args.test_dir = args.data_root_path + args.test_dir
 
     # where to put all model training stuff
     args.out_root_dir = args.out_root_dir + "/" + args.run_tag + "/"
@@ -204,8 +171,8 @@ def main():
     except OSError:
         pass
 
-    print("Info: outdir is ",args.out_root_dir)
-    
+    print("Info: outdir is ", args.out_root_dir)
+
     # device cpu/gpu...
     args.device = (
         torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -215,8 +182,8 @@ def main():
     set_seed(args.seed)
 
     # dataset & dataloader
-    ds_train = CustumDataset(args.train_img_dir, args.train_spec_dir)
-    ds_test = CustumDataset(args.test_img_dir, args.test_spec_dir)
+    ds_train = CustumDataset(args.train_dir,ndata=100_000)
+    ds_test = CustumDataset(args.test_dir)#,ndata=500)
 
     train_loader = DataLoader(
         dataset=ds_train,
@@ -236,28 +203,22 @@ def main():
     )
 
     # get a batch to determin the image/spectrum sizes
-    train_img, train_spec = next(iter(train_loader))
-    #img_channels = args.num_channels
+    train_img, train_clean = next(iter(train_loader))
+    # img_channels = args.num_channels
     img_H = train_img.shape[2]
     img_W = train_img.shape[3]
-    args.n_bins = train_spec.shape[1]
-    print("image sizes: HxW", img_H, img_W, "spectrum # bins", args.n_bins)
+    print("image sizes: HxW", img_H, img_W)
 
     # model instantiation
-    if args.archi == "Unet-Encoder":
+    if args.archi == "Unet-Full":
         model = UNet(args)
-    elif args.archi == "Inception":
-        model = NetWithInception(args)
-    elif args.archi == "Resnet18":
-        model = resnet18(num_input_channels = args.num_channels,
-                         num_classes=args.n_bins)
     else:
         print("Error: ", args.archi, "unknown")
         return
 
     # check ouptut of model is ok. Allow to determine the model config done at run tile
     out = model(train_img)
-    assert out.shape == train_spec.shape
+    assert out.shape == train_clean.shape
     print(
         "number of parameters is ",
         sum(p.numel() for p in model.parameters() if p.requires_grad) // 10**6,
@@ -272,45 +233,27 @@ def main():
 
     # optimizer & scheduler
 
-
-
-    #JEC 7 april 25
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=args.lr_init,
-        #eps=1e-8, # by default is 1e-8
-        #weight_decay=1e-3   # default is 0
+        # amsgrad=True,
+        # eps=1e-8, # by default is 1e-8
+        # weight_decay=1e-3   # default is 0
     )
-    #optimizer = torch.optim.AdamW(
-    #    filter(lambda p: p.requires_grad, model.parameters()),
-    #    lr=args.lr_init,
-    #    #eps=1e-8, # by default is 1e-8
-    #    #weight_decay=1e-3   # default is 0
-    #)
-    # particularization of the classifier layer for the learning
-    #my_list = ['fc0.linear.weight', 'fc0.linear.bias']
-    #fc0_params = list(filter(lambda kv: kv[0] in my_list, model.named_parameters()))
-    #base_params = list(filter(lambda kv: kv[0] not in my_list, model.named_parameters()))
-    #optimizer = torch.optim.Adam(
-    #    [
-    #        {'params' : base_params},
-    #        {'params' : fc0_params, 'lr': args.lr_init}
-    #    ],
-    #    lr=args.lr_init/10,
-    #)
-    #optimizer = torch.optim.SGD(
-    #    filter(lambda p: p.requires_grad, model.parameters()),
-    #    lr=args.lr_init,
-    #)
 
+    if args.use_scheduler:
     
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode="min",
-        factor=args.lr_decay,
-        patience=args.patience,
-        min_lr=1e-6
-    )
+        if args.scheduler == "cosine":
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.num_epochs,                                                     eta_min=1e-5)
+        elif args.scheduler == "reduce":
+            scheduler= torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode="min", factor=args.lr_decay, patience=args.patience, min_lr=1e-5)        
+        else:
+            print("FATAL: not known scheduler...")
+            return
+
+
+            
 
     # check for resume session: load model/optim/scheduler dictionnaries
     start_epoch = 0
@@ -331,6 +274,8 @@ def main():
             # model update state
             model.load_state_dict(checkpoint["model_state_dict"])
             if args.resume_scheduler:
+                # optizimer update state
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
                 # scheduler update state
                 scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             else:
@@ -363,15 +308,15 @@ def main():
         print("=> no checkpoints then Go as fresh start")
 
     # loss
-    criterion = nn.MSELoss(reduction="mean")
+    #criterion = nn.MSELoss(reduction="mean")
+    criterion = nn.L1Loss(reduction="mean")
 
     # loop on epochs
     t0 = time.time()
     best_test_loss = np.inf
 
-    print("The current args:",args)
-    
-    
+    print("The current args:", args)
+
     for epoch in range(start_epoch, args.num_epochs + 1):
         # training
         train_loss = train(args, model, criterion, train_loader, optimizer, epoch)
@@ -382,14 +327,18 @@ def main():
         print(
             f"Epoch {epoch}, Losses train: {train_loss:.6f}",
             f"test {test_loss:.6f}, LR= {scheduler.get_last_lr()}",
+            f"time {time.time()-t0:.2f}"
         )
         train_loss_history.append(train_loss)
         test_loss_history.append(test_loss)
 
         # update scheduler
         if args.use_scheduler:
-            # Warning ReduceLROnPlateau needs a metric
-            scheduler.step(test_loss)
+            if args.scheduler == "reduce":
+                # Warning ReduceLROnPlateau needs a metric
+                scheduler.step(test_loss)
+            else:
+                scheduler.step()
 
         # save state at each epoch to be able to reload and continue the optimization
         if args.use_scheduler:
@@ -423,11 +372,12 @@ def main():
             state,
             args.out_root_dir + "/" + args.archi + "_best_state.pth",
         )
-            
 
-    #Bye
+    # Bye
     tf = time.time()
     print("all done!", tf - t0)
+
+
 ################################
 if __name__ == "__main__":
     main()
